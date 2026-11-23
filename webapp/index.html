@@ -1,0 +1,530 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hippo Motor Control</title>
+<style>
+  :root {
+    color-scheme: light;
+    --surface-0: #f3f2ef;
+    --surface-1: #fcfcfb;
+    --border: #dddcd7;
+    --grid: #e9e8e4;
+    --text-primary: #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted: #7a7974;
+    --series-1: #2a78d6; /* measured velocity */
+    --series-2: #eb6834; /* target velocity */
+    --accent: #2a78d6;
+    --critical: #c62828;
+    --good: #2e7d32;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --surface-0: #111110;
+      --surface-1: #1a1a19;
+      --border: #33332f;
+      --grid: #2a2a27;
+      --text-primary: #f0efec;
+      --text-secondary: #c3c2b7;
+      --text-muted: #8f8e86;
+      --series-1: #3987e5;
+      --series-2: #d95926;
+      --accent: #3987e5;
+      --critical: #ef5350;
+      --good: #66bb6a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 20px;
+    font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: var(--surface-0); color: var(--text-primary);
+  }
+  main { max-width: 1000px; margin: 0 auto; display: grid; gap: 16px; }
+  header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  h1 { font-size: 20px; margin: 0; margin-right: auto; }
+  .card {
+    background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 10px; padding: 16px;
+  }
+  .card h2 { font-size: 13px; font-weight: 600; margin: 0 0 12px;
+             color: var(--text-secondary); text-transform: uppercase; letter-spacing: .04em; }
+  button {
+    font: inherit; padding: 8px 14px; border-radius: 8px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--surface-1); color: var(--text-primary);
+  }
+  button:hover:not(:disabled) { border-color: var(--text-muted); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.stop {
+    background: var(--critical); border-color: var(--critical); color: #fff;
+    font-weight: 700; padding: 10px 22px;
+  }
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px;
+    border-radius: 999px; border: 1px solid var(--border); color: var(--text-secondary); font-size: 13px;
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); }
+  .pill.ok .dot { background: var(--good); }
+  .pill.bad .dot { background: var(--critical); }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+  .tile .label { color: var(--text-secondary); font-size: 12px; }
+  .tile .value { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .tile .unit { font-size: 13px; color: var(--text-muted); font-weight: 400; margin-left: 2px; }
+  .tile .sub { color: var(--text-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .controls { display: grid; grid-template-columns: 1.4fr 1fr; gap: 16px; }
+  @media (max-width: 760px) { .controls { grid-template-columns: 1fr; } }
+  input[type=range] { flex: 1; min-width: 180px; accent-color: var(--series-2); }
+  input[type=number] {
+    font: inherit; width: 90px; padding: 6px 8px; border-radius: 6px;
+    border: 1px solid var(--border); background: var(--surface-0); color: var(--text-primary);
+  }
+  label.field { display: grid; grid-template-columns: 110px 1fr auto; align-items: center; gap: 8px; margin-bottom: 8px; }
+  label.field span { color: var(--text-secondary); }
+  .muted { color: var(--text-muted); font-size: 12px; }
+  .chart-head { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 8px; }
+  .chart-head h2 { margin: 0; margin-right: auto; }
+  .legend { display: flex; gap: 14px; color: var(--text-secondary); font-size: 13px; }
+  .legend i { display: inline-block; width: 18px; height: 0; border-top: 2px solid; vertical-align: middle; margin-right: 6px; }
+  .legend .target i { border-top-style: dashed; border-color: var(--series-2); }
+  .legend .actual i { border-color: var(--series-1); }
+  .chart-wrap { position: relative; height: 320px; }
+  canvas { width: 100%; height: 100%; display: block; }
+  .tooltip {
+    position: absolute; pointer-events: none; display: none;
+    background: var(--surface-1); border: 1px solid var(--border); border-radius: 6px;
+    padding: 6px 8px; font-size: 12px; box-shadow: 0 2px 8px rgba(0,0,0,.15);
+    font-variant-numeric: tabular-nums; white-space: nowrap;
+  }
+  .tooltip .sw { display: inline-block; width: 10px; height: 2px; vertical-align: middle; margin-right: 6px; }
+  select { font: inherit; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--border);
+           background: var(--surface-0); color: var(--text-primary); }
+  #unsupported { display: none; border-color: var(--critical); }
+  #log { font: 12px ui-monospace, Menlo, monospace; color: var(--text-secondary);
+         max-height: 90px; overflow: auto; white-space: pre-wrap; margin: 0; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Hippo Motor Control</h1>
+    <span id="connPill" class="pill"><span class="dot"></span><span id="connText">Disconnected</span></span>
+    <span id="motorPill" class="pill"><span class="dot"></span><span id="motorText">Motor: —</span></span>
+    <button id="connectBtn" class="primary">Connect</button>
+    <button id="stopBtn" class="stop" disabled title="Space bar">STOP</button>
+  </header>
+
+  <div id="unsupported" class="card">
+    Web Bluetooth isn't available in this browser. Use Chrome or Edge on desktop/Android,
+    served from <code>http://localhost</code> or HTTPS.
+  </div>
+
+  <section class="tiles">
+    <div class="card tile"><div class="label">Target velocity</div>
+      <div class="value"><span id="tTarget">—</span><span class="unit">rad/s</span></div>
+      <div class="sub" id="tTargetRpm">&nbsp;</div></div>
+    <div class="card tile"><div class="label">Measured velocity</div>
+      <div class="value"><span id="tVel">—</span><span class="unit">rad/s</span></div>
+      <div class="sub" id="tVelRpm">&nbsp;</div></div>
+    <div class="card tile"><div class="label">Shaft angle</div>
+      <div class="value"><span id="tAngle">—</span><span class="unit">°</span></div>
+      <div class="sub" id="tTurns">&nbsp;</div></div>
+    <div class="card tile"><div class="label">Voltage q</div>
+      <div class="value"><span id="tUq">—</span><span class="unit">V</span></div>
+      <div class="sub">limit 12 V</div></div>
+  </section>
+
+  <section class="card">
+    <div class="chart-head">
+      <h2>Velocity</h2>
+      <div class="legend">
+        <span class="actual"><i></i>Measured</span>
+        <span class="target"><i></i>Target</span>
+      </div>
+      <label class="row">Window
+        <select id="windowSel">
+          <option value="5">5 s</option>
+          <option value="10" selected>10 s</option>
+          <option value="30">30 s</option>
+          <option value="60">60 s</option>
+        </select>
+      </label>
+      <button id="pauseBtn">Pause</button>
+      <button id="csvBtn" disabled>Download CSV</button>
+    </div>
+    <div class="chart-wrap" id="chartWrap">
+      <canvas id="chart" aria-label="Target and measured velocity over time" role="img"></canvas>
+      <div class="tooltip" id="tooltip"></div>
+    </div>
+  </section>
+
+  <section class="controls">
+    <div class="card">
+      <h2>Velocity command</h2>
+      <div class="row" style="margin-bottom:12px">
+        <input type="range" id="velSlider" min="-40" max="40" step="0.5" value="0" disabled>
+        <input type="number" id="velNum" step="0.5" value="0" disabled>
+        <span class="muted">rad/s</span>
+      </div>
+      <div class="row" style="margin-bottom:12px">
+        <span class="muted">Slider range ±</span>
+        <input type="number" id="velRange" value="40" min="1" step="5" style="width:70px">
+        <span class="muted">rad/s</span>
+      </div>
+      <div class="row" id="presets"></div>
+      <div class="row" style="margin-top:12px">
+        <button id="enableBtn" disabled>Enable motor</button>
+        <button id="disableBtn" disabled>Disable motor</button>
+      </div>
+      <p class="muted">Space = stop. Disconnecting also sets the target to 0 on the board.</p>
+    </div>
+
+    <div class="card">
+      <h2>Velocity loop gains</h2>
+      <label class="field"><span>P (A per rad/s)</span><input type="number" id="gP" step="0.01"><span class="muted" id="curP">—</span></label>
+      <label class="field"><span>I</span><input type="number" id="gI" step="0.1"><span class="muted" id="curI">—</span></label>
+      <label class="field"><span>Filter Tf (s)</span><input type="number" id="gF" step="0.005"><span class="muted" id="curF">—</span></label>
+      <div class="row">
+        <button id="applyGains" disabled>Apply gains</button>
+        <span class="muted">Right column = value on the board</span>
+      </div>
+      <h2 style="margin-top:16px">Log</h2>
+      <pre id="log"></pre>
+    </div>
+  </section>
+</main>
+
+<script>
+// Must match firmware/ble_velocity_control/ble_velocity_control.ino
+const SERVICE_UUID = '6e1a0001-8b3c-4f2a-9d4e-2b7c1f0a5e01';
+const CMD_UUID     = '6e1a0002-8b3c-4f2a-9d4e-2b7c1f0a5e01';
+const TELEM_UUID   = '6e1a0003-8b3c-4f2a-9d4e-2b7c1f0a5e01';
+const STATE_UUID   = '6e1a0004-8b3c-4f2a-9d4e-2b7c1f0a5e01';
+const MOTOR_STATUS = { 0: 'uninitialized', 1: 'initializing', 2: 'uncalibrated',
+  3: 'calibrating', 4: 'ready', 8: 'error', 14: 'calibration failed', 15: 'init failed' };
+const RADS_TO_RPM = 60 / (2 * Math.PI);
+const MAX_SAMPLES = 20 * 600; // 10 min at 20 Hz
+
+const $ = id => document.getElementById(id);
+let device = null, cmdChar = null;
+let samples = [];       // {t (s, board clock), target, vel, angle, uq}
+let paused = false, frozenEnd = null;
+let hoverX = null;
+
+function log(msg) {
+  const el = $('log');
+  el.textContent += `${new Date().toLocaleTimeString()}  ${msg}\n`;
+  el.scrollTop = el.scrollHeight;
+}
+
+// ------------------------------------------------------------ BLE writes
+// Web Bluetooth rejects overlapping GATT operations, so writes go through a
+// single chain. Velocity commands coalesce: only the latest pending one is sent.
+let writeChain = Promise.resolve();
+let pendingVel = null, velQueued = false;
+const enc = new TextEncoder();
+
+function sendCmd(text) {
+  if (!cmdChar) return Promise.resolve();
+  writeChain = writeChain
+    .then(() => cmdChar.writeValueWithResponse(enc.encode(text)))
+    .catch(e => log(`write "${text}" failed: ${e.message}`));
+  return writeChain;
+}
+
+function sendVelocity(v) {
+  pendingVel = v;
+  if (velQueued) return;
+  velQueued = true;
+  writeChain = writeChain.then(async () => {
+    velQueued = false;
+    if (!cmdChar || pendingVel === null) return;
+    const val = pendingVel; pendingVel = null;
+    try { await cmdChar.writeValueWithResponse(enc.encode('V' + val.toFixed(3))); }
+    catch (e) { log(`velocity write failed: ${e.message}`); }
+  });
+}
+
+// ------------------------------------------------------------ connection
+async function connect() {
+  try {
+    device = await navigator.bluetooth.requestDevice({
+      filters: [{ services: [SERVICE_UUID] }, { namePrefix: 'Hippo' }],
+      optionalServices: [SERVICE_UUID],
+    });
+    device.addEventListener('gattserverdisconnected', onDisconnected);
+    $('connText').textContent = 'Connecting…';
+    const server = await device.gatt.connect();
+    const svc = await server.getPrimaryService(SERVICE_UUID);
+    cmdChar = await svc.getCharacteristic(CMD_UUID);
+    const telem = await svc.getCharacteristic(TELEM_UUID);
+    const state = await svc.getCharacteristic(STATE_UUID);
+    telem.addEventListener('characteristicvaluechanged', e => onTelemetry(e.target.value));
+    state.addEventListener('characteristicvaluechanged', e => onState(e.target.value));
+    await telem.startNotifications();
+    await state.startNotifications();
+    onState(await state.readValue());
+    samples = [];
+    setConnected(true);
+    log(`connected to ${device.name || 'device'}`);
+  } catch (e) {
+    log(`connect failed: ${e.message}`);
+    setConnected(false);
+  }
+}
+
+function disconnect() {
+  if (device && device.gatt.connected) device.gatt.disconnect();
+}
+
+function onDisconnected() {
+  cmdChar = null;
+  setConnected(false);
+  log('disconnected (board sets target to 0)');
+}
+
+function setConnected(on) {
+  $('connPill').className = 'pill ' + (on ? 'ok' : '');
+  $('connText').textContent = on ? `Connected: ${device?.name || ''}` : 'Disconnected';
+  $('connectBtn').textContent = on ? 'Disconnect' : 'Connect';
+  $('connectBtn').className = on ? '' : 'primary';
+  for (const id of ['stopBtn', 'velSlider', 'velNum', 'enableBtn', 'disableBtn', 'applyGains'])
+    $(id).disabled = !on;
+  document.querySelectorAll('#presets button').forEach(b => b.disabled = !on);
+  if (!on) { $('motorPill').className = 'pill'; $('motorText').textContent = 'Motor: —'; }
+}
+
+// ------------------------------------------------------------ incoming data
+let lastBoardMs = null, msOffset = 0;
+function onTelemetry(dv) {
+  if (dv.byteLength < 20) return;
+  let ms = dv.getUint32(0, true);
+  // board clock restarts on reset; keep time monotonic across it
+  if (lastBoardMs !== null && ms + msOffset < lastBoardMs) msOffset = lastBoardMs - ms + 50;
+  lastBoardMs = ms + msOffset;
+  const s = {
+    t: lastBoardMs / 1000,
+    target: dv.getFloat32(4, true),
+    vel: dv.getFloat32(8, true),
+    angle: dv.getFloat32(12, true),
+    uq: dv.getFloat32(16, true),
+  };
+  samples.push(s);
+  if (samples.length > MAX_SAMPLES) samples.splice(0, samples.length - MAX_SAMPLES);
+  $('csvBtn').disabled = false;
+  updateTiles(s);
+}
+
+function onState(dv) {
+  if (dv.byteLength < 14) return;
+  const P = dv.getFloat32(0, true), I = dv.getFloat32(4, true), F = dv.getFloat32(8, true);
+  const status = dv.getUint8(12), enabled = dv.getUint8(13);
+  $('curP').textContent = fmt(P, 4); $('curI').textContent = fmt(I, 3); $('curF').textContent = fmt(F, 3);
+  for (const [id, v] of [['gP', P], ['gI', I], ['gF', F]])
+    if (document.activeElement !== $(id) && $(id).value === '') $(id).value = +v.toFixed(4);
+  const ready = status === 4;
+  $('motorPill').className = 'pill ' + (ready && enabled ? 'ok' : 'bad');
+  $('motorText').textContent = `Motor: ${MOTOR_STATUS[status] ?? status}${ready ? (enabled ? ', enabled' : ', disabled') : ''}`;
+}
+
+const fmt = (v, d = 2) => (Number.isFinite(v) ? v.toFixed(d) : '—');
+
+function updateTiles(s) {
+  $('tTarget').textContent = fmt(s.target);
+  $('tTargetRpm').textContent = `${fmt(s.target * RADS_TO_RPM, 0)} RPM`;
+  $('tVel').textContent = fmt(s.vel);
+  $('tVelRpm').textContent = `${fmt(s.vel * RADS_TO_RPM, 0)} RPM`;
+  const deg = s.angle * 180 / Math.PI;
+  $('tAngle').textContent = fmt(((deg % 360) + 360) % 360, 1);
+  $('tTurns').textContent = `${fmt(s.angle / (2 * Math.PI), 2)} turns total`;
+  $('tUq').textContent = fmt(s.uq);
+}
+
+// ------------------------------------------------------------ controls
+function setVelocityUI(v, send = true) {
+  const r = +$('velRange').value || 40;
+  v = Math.max(-r, Math.min(r, v));
+  $('velSlider').value = v;
+  $('velNum').value = v;
+  if (send) sendVelocity(v);
+}
+
+function stop() { setVelocityUI(0); }
+
+function buildPresets() {
+  const r = +$('velRange').value || 40;
+  const steps = [-1, -0.5, -0.25, 0, 0.25, 0.5, 1].map(f => +(f * r).toFixed(1));
+  const box = $('presets'); box.innerHTML = '';
+  for (const v of steps) {
+    const b = document.createElement('button');
+    b.textContent = v > 0 ? `+${v}` : `${v}`;
+    b.disabled = !cmdChar;
+    b.onclick = () => setVelocityUI(v);
+    box.appendChild(b);
+  }
+}
+
+$('connectBtn').onclick = () => (device && device.gatt.connected ? disconnect() : connect());
+$('stopBtn').onclick = stop;
+$('velSlider').oninput = e => setVelocityUI(+e.target.value);
+$('velNum').onchange = e => setVelocityUI(+e.target.value);
+$('velRange').onchange = e => {
+  const r = Math.max(1, +e.target.value || 40);
+  $('velSlider').min = -r; $('velSlider').max = r;
+  buildPresets();
+};
+$('enableBtn').onclick = () => sendCmd('E1');
+$('disableBtn').onclick = () => { setVelocityUI(0, false); sendCmd('E0'); };
+$('applyGains').onclick = () => {
+  for (const [id, c] of [['gP', 'P'], ['gI', 'I'], ['gF', 'F']]) {
+    const v = $(id).value;
+    if (v !== '' && Number.isFinite(+v)) sendCmd(c + v);
+  }
+};
+$('pauseBtn').onclick = () => {
+  paused = !paused;
+  frozenEnd = paused && samples.length ? samples[samples.length - 1].t : null;
+  $('pauseBtn').textContent = paused ? 'Resume' : 'Pause';
+};
+$('csvBtn').onclick = () => {
+  const rows = ['t_s,target_rad_s,velocity_rad_s,angle_rad,voltage_q_V',
+    ...samples.map(s => [s.t.toFixed(3), s.target, s.vel, s.angle, s.uq].join(','))];
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([rows.join('\n')], { type: 'text/csv' }));
+  a.download = `hippo_velocity_${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+};
+document.addEventListener('keydown', e => {
+  if (e.code === 'Space' && cmdChar && !['INPUT', 'SELECT'].includes(e.target.tagName)) {
+    e.preventDefault(); stop();
+  }
+});
+
+// ------------------------------------------------------------ chart
+const canvas = $('chart'), ctx = canvas.getContext('2d'), wrap = $('chartWrap');
+const PAD = { l: 52, r: 76, t: 10, b: 28 };
+const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+function niceStep(range, target = 5) {
+  const raw = range / target, mag = 10 ** Math.floor(Math.log10(raw)), n = raw / mag;
+  return (n < 1.5 ? 1 : n < 3 ? 2 : n < 7 ? 5 : 10) * mag;
+}
+
+function draw() {
+  const dpr = window.devicePixelRatio || 1;
+  const W = wrap.clientWidth, H = wrap.clientHeight;
+  if (canvas.width !== W * dpr || canvas.height !== H * dpr) {
+    canvas.width = W * dpr; canvas.height = H * dpr;
+  }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+
+  const win = +$('windowSel').value;
+  const tEnd = paused ? frozenEnd : (samples.length ? samples[samples.length - 1].t : 0);
+  const tStart = tEnd - win;
+  const vis = samples.filter(s => s.t >= tStart - 0.1 && s.t <= tEnd);
+
+  // y-range always includes 0 and both series
+  let lo = 0, hi = 0;
+  for (const s of vis) { lo = Math.min(lo, s.vel, s.target); hi = Math.max(hi, s.vel, s.target); }
+  if (hi - lo < 1) { hi += 0.5; lo -= 0.5; }
+  const step = niceStep(hi - lo);
+  lo = Math.floor(lo / step) * step; hi = Math.ceil(hi / step) * step;
+
+  const pw = W - PAD.l - PAD.r, ph = H - PAD.t - PAD.b;
+  const x = t => PAD.l + ((t - tStart) / win) * pw;
+  const y = v => PAD.t + (1 - (v - lo) / (hi - lo)) * ph;
+
+  // grid + y labels
+  ctx.font = '12px system-ui, sans-serif';
+  ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+  for (let v = lo; v <= hi + step / 2; v += step) {
+    ctx.strokeStyle = Math.abs(v) < step / 1e3 ? css('--text-muted') : css('--grid');
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(PAD.l, Math.round(y(v)) + .5); ctx.lineTo(PAD.l + pw, Math.round(y(v)) + .5); ctx.stroke();
+    ctx.fillStyle = css('--text-muted');
+    ctx.fillText(+v.toFixed(3), PAD.l - 8, y(v));
+  }
+  ctx.save(); ctx.translate(12, PAD.t + ph / 2); ctx.rotate(-Math.PI / 2);
+  ctx.textAlign = 'center'; ctx.fillStyle = css('--text-secondary'); ctx.fillText('rad/s', 0, 0); ctx.restore();
+
+  // x labels: seconds relative to now
+  ctx.textAlign = 'center'; ctx.textBaseline = 'top'; ctx.fillStyle = css('--text-muted');
+  const xs = niceStep(win, 6);
+  for (let r = 0; r <= win + 1e-9; r += xs) {
+    ctx.fillText(r === 0 ? 'now' : `−${+r.toFixed(2)} s`, x(tEnd - r), PAD.t + ph + 8);
+  }
+
+  if (!vis.length) {
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = css('--text-muted');
+    ctx.fillText(cmdChar ? 'Waiting for telemetry…' : 'Connect to the board to see velocity', PAD.l + pw / 2, PAD.t + ph / 2);
+    requestAnimationFrame(draw); return;
+  }
+
+  ctx.save();
+  ctx.beginPath(); ctx.rect(PAD.l, PAD.t, pw, ph); ctx.clip();
+  const line = (key, color, dash) => {
+    ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.lineJoin = 'round'; ctx.setLineDash(dash);
+    ctx.beginPath();
+    vis.forEach((s, i) => (i ? ctx.lineTo(x(s.t), y(s[key])) : ctx.moveTo(x(s.t), y(s[key]))));
+    ctx.stroke(); ctx.setLineDash([]);
+  };
+  line('target', css('--series-2'), [6, 4]);
+  line('vel', css('--series-1'), []);
+  ctx.restore();
+
+  // direct labels at the right end (nudged apart if they collide)
+  const last = vis[vis.length - 1];
+  let yA = y(last.vel), yT = y(last.target);
+  if (Math.abs(yA - yT) < 14) { const m = (yA + yT) / 2, up = yA <= yT; yA = m + (up ? -7 : 7); yT = m + (up ? 7 : -7); }
+  ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillStyle = css('--text-secondary');
+  ctx.fillText('Measured', PAD.l + pw + 8, yA);
+  ctx.fillText('Target', PAD.l + pw + 8, yT);
+
+  // hover crosshair + tooltip
+  const tip = $('tooltip');
+  if (hoverX !== null && hoverX >= PAD.l && hoverX <= PAD.l + pw) {
+    const th = tStart + ((hoverX - PAD.l) / pw) * win;
+    let best = vis[0];
+    for (const s of vis) if (Math.abs(s.t - th) < Math.abs(best.t - th)) best = s;
+    const bx = x(best.t);
+    ctx.strokeStyle = css('--text-muted'); ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(bx + .5, PAD.t); ctx.lineTo(bx + .5, PAD.t + ph); ctx.stroke();
+    for (const [key, color] of [['target', css('--series-2')], ['vel', css('--series-1')]]) {
+      ctx.fillStyle = color; ctx.strokeStyle = css('--surface-1'); ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(bx, y(best[key]), 4.5, 0, 2 * Math.PI); ctx.fill(); ctx.stroke();
+    }
+    tip.innerHTML =
+      `<div style="color:var(--text-muted)">${(best.t - tEnd).toFixed(2)} s</div>` +
+      `<div><span class="sw" style="background:var(--series-1)"></span>Measured ${fmt(best.vel)} rad/s</div>` +
+      `<div><span class="sw" style="background:var(--series-2)"></span>Target ${fmt(best.target)} rad/s</div>` +
+      `<div style="color:var(--text-muted)">Uq ${fmt(best.uq)} V</div>`;
+    tip.style.display = 'block';
+    const tw = tip.offsetWidth;
+    tip.style.left = `${bx + 12 + tw > W ? bx - tw - 12 : bx + 12}px`;
+    tip.style.top = `${PAD.t + 4}px`;
+  } else {
+    tip.style.display = 'none';
+  }
+  requestAnimationFrame(draw);
+}
+
+wrap.addEventListener('pointermove', e => { hoverX = e.clientX - wrap.getBoundingClientRect().left; });
+wrap.addEventListener('pointerleave', () => { hoverX = null; });
+
+// ------------------------------------------------------------ init
+if (!navigator.bluetooth) {
+  $('unsupported').style.display = 'block';
+  $('connectBtn').disabled = true;
+}
+buildPresets();
+setConnected(false);
+requestAnimationFrame(draw);
+</script>
+</body>
+</html>
