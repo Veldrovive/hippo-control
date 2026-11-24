@@ -124,8 +124,8 @@
   </div>
 
   <section class="tiles">
-    <div class="card tile"><div class="label">Target velocity</div>
-      <div class="value"><span id="tTarget">—</span><span class="unit">rad/s</span></div>
+    <div class="card tile"><div class="label" id="tTargetLabel">Target velocity</div>
+      <div class="value"><span id="tTarget">—</span><span class="unit" id="tTargetUnit">rad/s</span></div>
       <div class="sub" id="tTargetRpm">&nbsp;</div></div>
     <div class="card tile"><div class="label">Measured velocity</div>
       <div class="value"><span id="tVel">—</span><span class="unit">rad/s</span></div>
@@ -176,7 +176,13 @@
         <span class="muted">rad/s</span>
       </div>
       <div class="row" id="presets"></div>
-      <h2 style="margin-top:16px">Torque test (simple_velocity_control only)</h2>
+      <h2 style="margin-top:16px">Torque / voltage (simple_velocity_control only)</h2>
+      <div class="row" style="margin-bottom:8px">
+        <span class="muted" style="width:110px">Torque (est. current)</span>
+        <input type="number" id="tNum" step="0.05" value="0.3">
+        <span class="muted">A</span>
+        <button id="tBtn" disabled>Apply</button>
+      </div>
       <div class="row" style="margin-bottom:8px">
         <span class="muted" style="width:110px">Direct voltage</span>
         <input type="number" id="uNum" step="0.5" value="2">
@@ -189,7 +195,8 @@
         <span class="muted">V</span>
         <button id="lBtn" disabled>Apply</button>
       </div>
-      <p class="muted">Direct voltage skips the loop: constant torque, ~V / 7.2 Ω amps at standstill.
+      <p class="muted">Torque mode holds an estimated current (torque ∝ current) at any speed, like the
+        old PID tool. Direct voltage is the same only at standstill (~V / 7.2 Ω amps).
         Moving the velocity slider (or STOP) returns to velocity control.</p>
       <div class="row" style="margin-top:12px">
         <button id="enableBtn" disabled>Enable motor</button>
@@ -229,6 +236,8 @@ let device = null, cmdChar = null;
 let samples = [];       // {t (s, board clock), target, vel, angle, uq}
 let paused = false, frozenEnd = null;
 let hoverX = null;
+let boardMode = 0; // 0 velocity, 1 voltage, 2 torque (simple_velocity_control)
+const MODE_TARGET = [['Target velocity', 'rad/s'], ['Target voltage', 'V'], ['Target current', 'A']];
 
 function log(msg) {
   const el = $('log');
@@ -307,7 +316,7 @@ function setConnected(on) {
   $('connText').textContent = on ? `Connected: ${device?.name || ''}` : 'Disconnected';
   $('connectBtn').textContent = on ? 'Disconnect' : 'Connect';
   $('connectBtn').className = on ? '' : 'primary';
-  for (const id of ['stopBtn', 'velSlider', 'velNum', 'enableBtn', 'disableBtn', 'applyGains', 'uBtn', 'lBtn'])
+  for (const id of ['stopBtn', 'velSlider', 'velNum', 'enableBtn', 'disableBtn', 'applyGains', 'uBtn', 'lBtn', 'tBtn'])
     $(id).disabled = !on;
   document.querySelectorAll('#presets button').forEach(b => b.disabled = !on);
   if (!on) { $('motorPill').className = 'pill'; $('motorText').textContent = 'Motor: —'; }
@@ -327,6 +336,7 @@ function onTelemetry(dv) {
     vel: dv.getFloat32(8, true),
     angle: dv.getFloat32(12, true),
     uq: dv.getFloat32(16, true),
+    mode: boardMode,
   };
   samples.push(s);
   if (samples.length > MAX_SAMPLES) samples.splice(0, samples.length - MAX_SAMPLES);
@@ -346,7 +356,8 @@ function onState(dv) {
   let modeTxt = '', stalled = false;
   if (dv.byteLength >= 20) {
     stalled = dv.getUint8(15) === 1;
-    modeTxt = dv.getUint8(14) === 1 ? ', direct voltage' : ', velocity';
+    boardMode = dv.getUint8(14);
+    modeTxt = [', velocity', ', direct voltage', ', torque'][boardMode] ?? '';
     const lim = dv.getFloat32(16, true);
     $('tLimit').textContent = `limit ${fmt(lim, 1)} V`;
     if (document.activeElement !== $('lNum') && $('lNum').value === '') $('lNum').value = +lim.toFixed(2);
@@ -362,8 +373,11 @@ function onState(dv) {
 const fmt = (v, d = 2) => (Number.isFinite(v) ? v.toFixed(d) : '—');
 
 function updateTiles(s) {
+  const [lbl, unit] = MODE_TARGET[boardMode] ?? MODE_TARGET[0];
+  $('tTargetLabel').textContent = lbl;
+  $('tTargetUnit').textContent = unit;
   $('tTarget').textContent = fmt(s.target);
-  $('tTargetRpm').textContent = `${fmt(s.target * RADS_TO_RPM, 0)} RPM`;
+  $('tTargetRpm').textContent = boardMode === 0 ? `${fmt(s.target * RADS_TO_RPM, 0)} RPM` : '\u00a0';
   $('tVel').textContent = fmt(s.vel);
   $('tVelRpm').textContent = `${fmt(s.vel * RADS_TO_RPM, 0)} RPM`;
   const deg = s.angle * 180 / Math.PI;
@@ -406,6 +420,7 @@ $('velRange').onchange = e => {
   buildPresets();
 };
 $('enableBtn').onclick = () => sendCmd('E1');
+$('tBtn').onclick = () => { const v = +$('tNum').value; if (Number.isFinite(v)) sendCmd('T' + v); };
 $('uBtn').onclick = () => { const v = +$('uNum').value; if (Number.isFinite(v)) sendCmd('U' + v); };
 $('lBtn').onclick = () => { const v = +$('lNum').value; if (Number.isFinite(v)) sendCmd('L' + v); };
 $('disableBtn').onclick = () => { setVelocityUI(0, false); sendCmd('E0'); };
@@ -421,8 +436,8 @@ $('pauseBtn').onclick = () => {
   $('pauseBtn').textContent = paused ? 'Resume' : 'Pause';
 };
 $('csvBtn').onclick = () => {
-  const rows = ['t_s,target_rad_s,velocity_rad_s,angle_rad,voltage_q_V',
-    ...samples.map(s => [s.t.toFixed(3), s.target, s.vel, s.angle, s.uq].join(','))];
+  const rows = ['t_s,mode,target,velocity_rad_s,angle_rad,voltage_q_V',
+    ...samples.map(s => [s.t.toFixed(3), ['velocity', 'voltage', 'torque'][s.mode ?? 0], s.target, s.vel, s.angle, s.uq].join(','))];
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([rows.join('\n')], { type: 'text/csv' }));
   a.download = `hippo_velocity_${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
@@ -461,7 +476,8 @@ function draw() {
 
   // y-range always includes 0 and both series
   let lo = 0, hi = 0;
-  for (const s of vis) { lo = Math.min(lo, s.vel, s.target); hi = Math.max(hi, s.vel, s.target); }
+  const tv = s => (s.mode ? s.vel : s.target); // target is only rad/s in velocity mode
+  for (const s of vis) { lo = Math.min(lo, s.vel, tv(s)); hi = Math.max(hi, s.vel, tv(s)); }
   if (hi - lo < 1) { hi += 0.5; lo -= 0.5; }
   const step = niceStep(hi - lo);
   lo = Math.floor(lo / step) * step; hi = Math.ceil(hi / step) * step;
@@ -501,7 +517,12 @@ function draw() {
   const line = (key, color, dash) => {
     ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.lineJoin = 'round'; ctx.setLineDash(dash);
     ctx.beginPath();
-    vis.forEach((s, i) => (i ? ctx.lineTo(x(s.t), y(s[key])) : ctx.moveTo(x(s.t), y(s[key]))));
+    let pen = false;
+    for (const s of vis) {
+      if (key === 'target' && s.mode) { pen = false; continue; } // not rad/s: don't plot
+      pen ? ctx.lineTo(x(s.t), y(s[key])) : ctx.moveTo(x(s.t), y(s[key]));
+      pen = true;
+    }
     ctx.stroke(); ctx.setLineDash([]);
   };
   line('target', css('--series-2'), [6, 4]);
@@ -514,7 +535,7 @@ function draw() {
   if (Math.abs(yA - yT) < 14) { const m = (yA + yT) / 2, up = yA <= yT; yA = m + (up ? -7 : 7); yT = m + (up ? 7 : -7); }
   ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillStyle = css('--text-secondary');
   ctx.fillText('Measured', PAD.l + pw + 8, yA);
-  ctx.fillText('Target', PAD.l + pw + 8, yT);
+  if (!last.mode) ctx.fillText('Target', PAD.l + pw + 8, yT);
 
   // hover crosshair + tooltip
   const tip = $('tooltip');
@@ -526,13 +547,14 @@ function draw() {
     ctx.strokeStyle = css('--text-muted'); ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(bx + .5, PAD.t); ctx.lineTo(bx + .5, PAD.t + ph); ctx.stroke();
     for (const [key, color] of [['target', css('--series-2')], ['vel', css('--series-1')]]) {
+      if (key === 'target' && best.mode) continue;
       ctx.fillStyle = color; ctx.strokeStyle = css('--surface-1'); ctx.lineWidth = 2;
       ctx.beginPath(); ctx.arc(bx, y(best[key]), 4.5, 0, 2 * Math.PI); ctx.fill(); ctx.stroke();
     }
     tip.innerHTML =
       `<div style="color:var(--text-muted)">${(best.t - tEnd).toFixed(2)} s</div>` +
       `<div><span class="sw" style="background:var(--series-1)"></span>Measured ${fmt(best.vel)} rad/s</div>` +
-      `<div><span class="sw" style="background:var(--series-2)"></span>Target ${fmt(best.target)} rad/s</div>` +
+      `<div><span class="sw" style="background:var(--series-2)"></span>${MODE_TARGET[best.mode ?? 0][0]} ${fmt(best.target)} ${MODE_TARGET[best.mode ?? 0][1]}</div>` +
       `<div style="color:var(--text-muted)">Uq ${fmt(best.uq)} V</div>`;
     tip.style.display = 'block';
     const tw = tip.offsetWidth;

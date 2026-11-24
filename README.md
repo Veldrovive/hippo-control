@@ -146,11 +146,14 @@ Extra commands on top of `V`, `P`, `I`, `F`, `E`:
 
 | Command | Effect |
 |---|---|
-| `U<volts>` | direct voltage mode: constant torque with no loop, e.g. `U3`. `V…` switches back to velocity mode. |
+| `T<amps>` | torque mode: holds an estimated current (torque ∝ current), e.g. `T0.5`. Same model as the old PID tool (SimpleFOC `estimated_current`): `U = I·R + ω/(KV·√3)` plus a small inductance term, so torque stays roughly constant as speed changes. |
+| `U<volts>` | direct voltage mode: no loop, e.g. `U3`. Same torque as `T` only at standstill (~V / 7.2 Ω amps); torque drops as speed rises. `V…` switches back to velocity mode. |
 | `L<volts>` | voltage (torque) limit, up to 13.5 V on 24 V |
 | `S<seconds>` | stall cutoff time (default 0.5). `S0` disables the protection; only for deliberate tests |
 
-P and I are in volts here: P is V per rad/s (default 0.3), I is V per rad/s per second (default 3.0). The web app has a "Torque test" box for `U` and `L`.
+P and I are in volts here: P is V per rad/s (default 0.3), I is V per rad/s per second (default 3.0). The web app has a "Torque / voltage" box for `T`, `U` and `L`. In torque and voltage modes the chart shows measured velocity only.
+
+There's no current sensor, so torque mode's current is an estimate. Its accuracy depends on R (copper resistance rises ~0.4 %/°C, so a hot motor gives less torque than commanded) and on the KV rating. At stall it's subject to stall protection like any other mode: `T0.6` held against a stop (~4.3 V) trips after 0.5 s unless you raise `S`.
 
 Velocity is computed over a 2 ms window (`VEL_SAMPLE_TIME`) instead of SimpleFOC's 0.1 ms default. One count of AS5600 flicker over 0.1 ms reads as several rad/s of fake velocity; over 2 ms it's ~20x smaller.
 

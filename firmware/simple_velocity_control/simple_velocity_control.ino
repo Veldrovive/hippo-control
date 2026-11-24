@@ -18,6 +18,8 @@
 // Commands (serial 115200 or BLE, one per line):
 //   V<rad/s>  velocity mode, target velocity      e.g. V10, V-5, V0
 //   U<volts>  direct voltage mode (no loop): constant torque, e.g. U3
+//   T<amps>   torque mode: estimated current, same model as the old PID
+//             tool (SimpleFOC estimated_current), e.g. T0.5
 //   L<volts>  voltage (= torque) limit, max ~13.5 on 24 V
 //   P<val>    Kp  (volts per rad/s of error)
 //   I<val>    Ki  (volts per rad/s of error, per second)
@@ -42,8 +44,14 @@
 #define MOTOR_IN3 26
 #define MOTOR_EN 27
 #define MOTOR_POLE_PAIRS 11
+#define MOTOR_PHASE_RESISTANCE 7.2    // ohm
+#define MOTOR_KV_RATING 61            // RPM / V
+#define MOTOR_PHASE_INDUCTANCE 0.0026 // H
+// Back-EMF constant, V per rad/s: same formula as SimpleFOC's
+// BLDCMotor::estimateBEMF (vel / (KV * sqrt3) / RPM_TO_RADS)
+#define MOTOR_KE (1.0f / (MOTOR_KV_RATING * 1.7320508f * 0.10471976f))
 
-#define VOLTAGE_POWER_SUPPLY 24.0 // MUST match the real supply
+#define VOLTAGE_POWER_SUPPLY 32.0 // MUST match the real supply
 #define VOLTAGE_SENSOR_ALIGN 3.0  // startup alignment push (volts)
 
 // ------------------------------------------------------------ control
@@ -64,11 +72,12 @@
 #define STALL_VELOCITY 0.5      // rad/s: "not moving"
 #define DEFAULT_STALL_TIME 0.5  // s before cutting out; 0 = disabled
 
-enum Mode : uint8_t { MODE_VELOCITY = 0, MODE_VOLTAGE = 1 };
+enum Mode : uint8_t { MODE_VELOCITY = 0, MODE_VOLTAGE = 1, MODE_TORQUE = 2 };
 
 Mode mode = MODE_VELOCITY;
 float target_velocity = 0; // rad/s  (velocity mode)
 float direct_voltage = 0;  // V      (voltage mode)
+float target_current = 0;  // A      (torque mode, torque ~ current)
 float voltage_limit = DEFAULT_VOLTAGE_LIMIT;
 float kp = DEFAULT_KP;
 float ki = DEFAULT_KI;
@@ -93,6 +102,8 @@ void stopMotion();
 void controlStep(float dt) {
   float velocity = motor.shaft_velocity; // rad/s, already low-pass filtered
 
+  motor.feed_forward_voltage.d = 0; // only torque mode uses the d axis
+
   if (!motor.enabled) { // disabled or stalled: output nothing, don't wind up
     integral = 0;
     voltage_cmd = 0;
@@ -108,6 +119,15 @@ void controlStep(float dt) {
     integral = constrain(integral, -voltage_limit, voltage_limit);
 
     voltage_cmd = kp * error + integral;
+  } else if (mode == MODE_TORQUE) {
+    // No current sensor, so estimate it (same model as SimpleFOC's
+    // estimated_current): current = (U - back-EMF) / R, solved for U.
+    voltage_cmd = target_current * MOTOR_PHASE_RESISTANCE + MOTOR_KE * velocity;
+    // d-axis lag compensation for the winding inductance (small)
+    motor.feed_forward_voltage.d =
+        constrain(-target_current * velocity * MOTOR_POLE_PAIRS *
+                      MOTOR_PHASE_INDUCTANCE,
+                  -voltage_limit, voltage_limit);
   } else { // MODE_VOLTAGE: no loop, just push
     voltage_cmd = direct_voltage;
   }
@@ -162,11 +182,14 @@ unsigned long last_state_ms = 0;
 // ------------------------------------------------------------ commands
 void printSettings() {
   Serial.print("# mode=");
-  Serial.print(mode == MODE_VELOCITY ? "velocity" : "voltage");
+  Serial.print(mode == MODE_VELOCITY ? "velocity"
+               : mode == MODE_VOLTAGE ? "voltage" : "torque");
   Serial.print(" V=");
   Serial.print(target_velocity, 2);
   Serial.print(" U=");
   Serial.print(direct_voltage, 2);
+  Serial.print(" T=");
+  Serial.print(target_current, 3);
   Serial.print(" L=");
   Serial.print(voltage_limit, 2);
   Serial.print(" P=");
@@ -208,6 +231,10 @@ void runCommand(const char *line) {
     mode = MODE_VOLTAGE;
     direct_voltage = val;
     break;
+  case 'T':
+    mode = MODE_TORQUE;
+    target_current = val;
+    break;
   case 'L':
     voltage_limit = constrain(val, 0.0f, (float)MAX_VOLTAGE_LIMIT);
     break;
@@ -231,8 +258,7 @@ void runCommand(const char *line) {
       stall_timer = 0;
       motor.enable();
     } else {
-      target_velocity = 0;
-      direct_voltage = 0;
+      stopMotion();
       motor.disable();
     }
     break;
@@ -249,6 +275,7 @@ void runCommand(const char *line) {
 void stopMotion() {
   target_velocity = 0;
   direct_voltage = 0;
+  target_current = 0;
   integral = 0;
   mode = MODE_VELOCITY;
 }
@@ -297,12 +324,16 @@ class CmdCallbacks : public BLECharacteristicCallbacks {
   }
 };
 
-// TELEM (20 B): uint32 ms, float target_vel, float velocity, float angle,
+// TELEM (20 B): uint32 ms, float target, float velocity, float angle,
 //               float voltage_cmd
+// target is the active mode's target: rad/s (velocity), V (voltage),
+// A (torque). The mode itself is in the STATE packet.
 void sendTelemetry(unsigned long now) {
   uint8_t buf[20];
   uint32_t ms = now;
-  float f[4] = {mode == MODE_VELOCITY ? target_velocity : 0.0f,
+  float target = mode == MODE_VELOCITY ? target_velocity
+                 : mode == MODE_VOLTAGE ? direct_voltage : target_current;
+  float f[4] = {target,
                 motor.shaft_velocity, motor.shaft_angle, voltage_cmd};
   memcpy(buf, &ms, 4);
   memcpy(buf + 4, f, 16);
