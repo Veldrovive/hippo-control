@@ -343,15 +343,20 @@ function onState(dv) {
     if (document.activeElement !== $(id) && $(id).value === '') $(id).value = +v.toFixed(4);
   const ready = status === 4;
   // simple_velocity_control sends 20 bytes: + mode, pad, voltage limit
-  let modeTxt = '';
+  let modeTxt = '', stalled = false;
   if (dv.byteLength >= 20) {
+    stalled = dv.getUint8(15) === 1;
     modeTxt = dv.getUint8(14) === 1 ? ', direct voltage' : ', velocity';
     const lim = dv.getFloat32(16, true);
     $('tLimit').textContent = `limit ${fmt(lim, 1)} V`;
     if (document.activeElement !== $('lNum') && $('lNum').value === '') $('lNum').value = +lim.toFixed(2);
   }
   $('motorPill').className = 'pill ' + (ready && enabled ? 'ok' : 'bad');
-  $('motorText').textContent = `Motor: ${MOTOR_STATUS[status] ?? status}${ready ? (enabled ? ', enabled' : ', disabled') : ''}${modeTxt}`;
+  $('motorText').textContent = stalled
+    ? 'Motor: STALLED (clear the jam, then Enable motor)'
+    : `Motor: ${MOTOR_STATUS[status] ?? status}${ready ? (enabled ? ', enabled' : ', disabled') : ''}${modeTxt}`;
+  if (stalled && !onState.wasStalled) log('STALL: motor disabled by stall protection');
+  onState.wasStalled = stalled;
 }
 
 const fmt = (v, d = 2) => (Number.isFinite(v) ? v.toFixed(d) : '—');

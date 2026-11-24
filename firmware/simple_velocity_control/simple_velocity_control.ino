@@ -7,8 +7,13 @@
 //
 // Torque is proportional to phase current, and at standstill
 // current = voltage / 7.2 ohm. So the voltage limit is the torque limit:
-//   12 V -> ~1.7 A at stall (strong, but the motor heats up fast if stalled)
+//   12 V -> ~1.7 A at stall (strong, but cooks the driver if held)
+//    8 V -> ~1.1 A at stall (default)
 //    6 V -> ~0.8 A at stall
+//
+// Stall protection: if the motor pushes hard (>= STALL_VOLTAGE) but barely
+// moves (< STALL_VELOCITY) for longer than the stall time, e.g. a jammed
+// gear, the motor is disabled. Clear the jam, then send E1.
 //
 // Commands (serial 115200 or BLE, one per line):
 //   V<rad/s>  velocity mode, target velocity      e.g. V10, V-5, V0
@@ -17,6 +22,7 @@
 //   P<val>    Kp  (volts per rad/s of error)
 //   I<val>    Ki  (volts per rad/s of error, per second)
 //   F<sec>    velocity filter time constant
+//   S<sec>    stall cutoff time (S0 disables protection: careful)
 //   E1 / E0   enable / disable the motor
 //   ?         print settings
 //
@@ -41,7 +47,7 @@
 #define VOLTAGE_SENSOR_ALIGN 3.0  // startup alignment push (volts)
 
 // ------------------------------------------------------------ control
-#define DEFAULT_VOLTAGE_LIMIT 12.0 // volts = torque limit (see top)
+#define DEFAULT_VOLTAGE_LIMIT 8.0  // volts = torque limit (see top)
 #define MAX_VOLTAGE_LIMIT 13.5     // ~ supply / sqrt(3) with space-vector PWM
 #define DEFAULT_KP 0.3             // V per rad/s
 #define DEFAULT_KI 3.0             // V per rad/s per s
@@ -52,6 +58,11 @@
 // that ~20x for ~1 ms of extra lag.
 #define VEL_SAMPLE_TIME 0.002 // s
 #define CONTROL_PERIOD_US 1000     // run the PI loop at 1 kHz
+
+// Stall protection (see top)
+#define STALL_VOLTAGE 4.0       // V: "pushing hard" (~0.55 A at standstill)
+#define STALL_VELOCITY 0.5      // rad/s: "not moving"
+#define DEFAULT_STALL_TIME 0.5  // s before cutting out; 0 = disabled
 
 enum Mode : uint8_t { MODE_VELOCITY = 0, MODE_VOLTAGE = 1 };
 
@@ -65,6 +76,10 @@ float ki = DEFAULT_KI;
 float integral = 0;    // V, the I-term's accumulated output
 float voltage_cmd = 0; // V, what we send to the motor
 
+float stall_time = DEFAULT_STALL_TIME;
+float stall_timer = 0; // s spent pushing hard without moving
+bool stalled = false;  // latched until E1
+
 MagneticSensorI2C sensor = MagneticSensorI2C(AS5600_I2C);
 BLDCMotor motor = BLDCMotor(MOTOR_POLE_PAIRS);
 BLDCDriver3PWM driver =
@@ -73,8 +88,17 @@ BLDCDriver3PWM driver =
 // =====================================================================
 // THE CONTROL LOOP. Runs every CONTROL_PERIOD_US. dt is in seconds.
 // =====================================================================
+void stopMotion();
+
 void controlStep(float dt) {
   float velocity = motor.shaft_velocity; // rad/s, already low-pass filtered
+
+  if (!motor.enabled) { // disabled or stalled: output nothing, don't wind up
+    integral = 0;
+    voltage_cmd = 0;
+    stall_timer = 0;
+    return;
+  }
 
   if (mode == MODE_VELOCITY) {
     float error = target_velocity - velocity;
@@ -89,6 +113,23 @@ void controlStep(float dt) {
   }
 
   voltage_cmd = constrain(voltage_cmd, -voltage_limit, voltage_limit);
+
+  // ---- stall protection ----
+  bool pushing_hard = fabs(voltage_cmd) >= STALL_VOLTAGE;
+  bool not_moving = fabs(velocity) < STALL_VELOCITY;
+  if (stall_time > 0 && pushing_hard && not_moving)
+    stall_timer += dt;
+  else
+    stall_timer = 0;
+
+  if (stall_time > 0 && stall_timer >= stall_time) {
+    stalled = true;
+    stopMotion();
+    voltage_cmd = 0;
+    motor.disable();
+    Serial.println("# STALL: pushing hard but not moving, motor disabled. "
+                   "Clear the jam, then send E1.");
+  }
 }
 // =====================================================================
 
@@ -134,8 +175,12 @@ void printSettings() {
   Serial.print(ki, 4);
   Serial.print(" F=");
   Serial.print(motor.LPF_velocity.Tf, 4);
+  Serial.print(" S=");
+  Serial.print(stall_time, 2);
   Serial.print(" enabled=");
-  Serial.println(motor.enabled);
+  Serial.print(motor.enabled);
+  Serial.print(" stalled=");
+  Serial.println(stalled);
 }
 
 void sendState();
@@ -176,9 +221,14 @@ void runCommand(const char *line) {
   case 'F':
     motor.LPF_velocity.Tf = val;
     break;
+  case 'S':
+    stall_time = max(val, 0.0f);
+    break;
   case 'E':
     if (val != 0 && motor.motor_status == FOCMotorStatus::motor_ready) {
       integral = 0;
+      stalled = false;
+      stall_timer = 0;
       motor.enable();
     } else {
       target_velocity = 0;
@@ -261,7 +311,7 @@ void sendTelemetry(unsigned long now) {
 }
 
 // STATE (20 B): float P, float I, float F, uint8 motor_status,
-//               uint8 enabled, uint8 mode, uint8 pad, float voltage_limit
+//               uint8 enabled, uint8 mode, uint8 stalled, float voltage_limit
 // (first 14 bytes match ble_velocity_control)
 void sendState() {
   if (!state_char)
@@ -272,6 +322,7 @@ void sendState() {
   buf[12] = (uint8_t)motor.motor_status;
   buf[13] = (uint8_t)motor.enabled;
   buf[14] = (uint8_t)mode;
+  buf[15] = (uint8_t)stalled;
   memcpy(buf + 16, &voltage_limit, 4);
   state_char->setValue(buf, sizeof(buf));
   if (ble_connected)

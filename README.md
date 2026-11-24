@@ -138,7 +138,9 @@ integral += Ki * error * dt;          // clamped to ±voltage_limit (anti-windup
 voltage   = Kp * error + integral;    // clamped to ±voltage_limit
 ```
 
-**Voltage limit = torque limit.** At standstill, current = V / 7.2 Ω, so 12 V gives ~1.7 A (strong, but the motor heats up quickly if held stalled). `ble_velocity_control` capped this at 1 A estimated (~7 V), which is why it felt weak.
+**Voltage limit = torque limit.** At standstill, current = V / 7.2 Ω. The default 8 V gives ~1.1 A; 12 V gives ~1.7 A, which is strong but cooks the SimpleFOC Mini if held (its driver chip is rated ~2.5 A *peak*, on a small board with no heatsink). `ble_velocity_control` capped this at 1 A estimated (~7 V), which is why it felt weak.
+
+**Stall protection.** If the motor pushes at ≥ 4 V (~0.55 A) while moving slower than 0.5 rad/s for 0.5 s (e.g. a jammed gear), it disables itself and reports `STALL` (serial, and in the web app's motor status). Clear the jam, then send `E1` / press Enable motor. Without this, a jam makes the I term wind up to the full limit and holds max current through the driver indefinitely, which is likely what killed the first board. `ble_velocity_control` does **not** have this protection.
 
 Extra commands on top of `V`, `P`, `I`, `F`, `E`:
 
@@ -146,6 +148,7 @@ Extra commands on top of `V`, `P`, `I`, `F`, `E`:
 |---|---|
 | `U<volts>` | direct voltage mode: constant torque with no loop, e.g. `U3`. `V…` switches back to velocity mode. |
 | `L<volts>` | voltage (torque) limit, up to 13.5 V on 24 V |
+| `S<seconds>` | stall cutoff time (default 0.5). `S0` disables the protection; only for deliberate tests |
 
 P and I are in volts here: P is V per rad/s (default 0.3), I is V per rad/s per second (default 3.0). The web app has a "Torque test" box for `U` and `L`.
 
