@@ -7,6 +7,7 @@ firmware/
   encoder_test/            1. read the encoder only (motor off)
   constant_velocity_test/  2. spin the motor, tune over serial
   ble_velocity_control/    3. full control over Bluetooth LE
+  driver_test/             diagnostics: driver, motor wiring, encoder (no FOC)
 webapp/
   index.html               Web Bluetooth control panel (single file, no build)
 ```
@@ -125,6 +126,21 @@ The same motor setup as `constant_velocity_test`, plus a Bluetooth LE service so
 **Safety:** if the Bluetooth connection drops, the target velocity is set to 0 and the board starts advertising again.
 
 See [BLE protocol](#ble-protocol) if you want to write your own client.
+
+### Diagnostics: `driver_test`
+
+When something isn't working, this sketch tests each piece on its own, without the FOC loop or the startup alignment. Run the steps in order; the first one that fails is where the problem is.
+
+| Step | Command | What should happen | If it doesn't |
+|---|---|---|---|
+| 1. Driver outputs | `h` (all phases at half supply) | Multimeter (DC) from each motor output to GND reads ~half the supply (12 V on 24 V). Unplug the motor first for the cleanest reading. | Driver not powered, EN (GPIO 27) not wired, an IN pin miswired, or the driver is damaged. If one output differs, check that IN pin. |
+| 2. Each phase | `a`, then `b`, then `c` (3 V on one phase) | Motor snaps to and holds a position; each phase holds a **different** position. | No hold on any: motor not connected or driver not switching. One phase dead: that motor wire or driver output. |
+| 3. Open-loop spin | `o5` (5 rad/s, encoder not used) | Motor turns smoothly. | Stutters or vibrates in place: a phase is missing or miswired (recheck step 2). |
+| 4. Encoder | while `o5` runs, watch `enc_vel` | `enc_vel` ≈ ±5 (the sign depends on mounting). | ~0: encoder not reading (see `encoder_test`). Way off, e.g. ±10 or ±2.5: pole pair count is wrong. |
+
+`x` stops everything; `?` prints status. Status also prints every 500 ms. If your SimpleFOC Mini has a fault output (nFT / FAULT), wire it to a free GPIO and set `FAULT_PIN` to show it in the status line.
+
+If all four steps pass but the closed-loop sketches still fail, the hardware is fine and the problem is in alignment or tuning: see [Configuration and tuning](#configuration-and-tuning).
 
 ---
 
