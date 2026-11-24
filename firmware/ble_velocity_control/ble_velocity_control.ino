@@ -288,6 +288,7 @@ void setup() {
 
   Wire.begin(I2C_SDA, I2C_SCL);
   Wire.setClock(400000);
+  sensor.min_elapsed_time = 0.002; // 2 ms velocity window: less encoder noise
   sensor.init(&Wire);
   motor.linkSensor(&sensor);
 

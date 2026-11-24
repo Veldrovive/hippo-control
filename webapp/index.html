@@ -135,7 +135,7 @@
       <div class="sub" id="tTurns">&nbsp;</div></div>
     <div class="card tile"><div class="label">Voltage q</div>
       <div class="value"><span id="tUq">—</span><span class="unit">V</span></div>
-      <div class="sub">limit 12 V</div></div>
+      <div class="sub" id="tLimit">&nbsp;</div></div>
   </section>
 
   <section class="card">
@@ -176,6 +176,21 @@
         <span class="muted">rad/s</span>
       </div>
       <div class="row" id="presets"></div>
+      <h2 style="margin-top:16px">Torque test (simple_velocity_control only)</h2>
+      <div class="row" style="margin-bottom:8px">
+        <span class="muted" style="width:110px">Direct voltage</span>
+        <input type="number" id="uNum" step="0.5" value="2">
+        <span class="muted">V</span>
+        <button id="uBtn" disabled>Apply</button>
+      </div>
+      <div class="row">
+        <span class="muted" style="width:110px">Voltage limit</span>
+        <input type="number" id="lNum" step="0.5" min="0" max="13.5">
+        <span class="muted">V</span>
+        <button id="lBtn" disabled>Apply</button>
+      </div>
+      <p class="muted">Direct voltage skips the loop: constant torque, ~V / 7.2 Ω amps at standstill.
+        Moving the velocity slider (or STOP) returns to velocity control.</p>
       <div class="row" style="margin-top:12px">
         <button id="enableBtn" disabled>Enable motor</button>
         <button id="disableBtn" disabled>Disable motor</button>
@@ -185,7 +200,7 @@
 
     <div class="card">
       <h2>Velocity loop gains</h2>
-      <label class="field"><span>P (A per rad/s)</span><input type="number" id="gP" step="0.01"><span class="muted" id="curP">—</span></label>
+      <label class="field"><span>P</span><input type="number" id="gP" step="0.01"><span class="muted" id="curP">—</span></label>
       <label class="field"><span>I</span><input type="number" id="gI" step="0.1"><span class="muted" id="curI">—</span></label>
       <label class="field"><span>Filter Tf (s)</span><input type="number" id="gF" step="0.005"><span class="muted" id="curF">—</span></label>
       <div class="row">
@@ -292,7 +307,7 @@ function setConnected(on) {
   $('connText').textContent = on ? `Connected: ${device?.name || ''}` : 'Disconnected';
   $('connectBtn').textContent = on ? 'Disconnect' : 'Connect';
   $('connectBtn').className = on ? '' : 'primary';
-  for (const id of ['stopBtn', 'velSlider', 'velNum', 'enableBtn', 'disableBtn', 'applyGains'])
+  for (const id of ['stopBtn', 'velSlider', 'velNum', 'enableBtn', 'disableBtn', 'applyGains', 'uBtn', 'lBtn'])
     $(id).disabled = !on;
   document.querySelectorAll('#presets button').forEach(b => b.disabled = !on);
   if (!on) { $('motorPill').className = 'pill'; $('motorText').textContent = 'Motor: —'; }
@@ -327,8 +342,16 @@ function onState(dv) {
   for (const [id, v] of [['gP', P], ['gI', I], ['gF', F]])
     if (document.activeElement !== $(id) && $(id).value === '') $(id).value = +v.toFixed(4);
   const ready = status === 4;
+  // simple_velocity_control sends 20 bytes: + mode, pad, voltage limit
+  let modeTxt = '';
+  if (dv.byteLength >= 20) {
+    modeTxt = dv.getUint8(14) === 1 ? ', direct voltage' : ', velocity';
+    const lim = dv.getFloat32(16, true);
+    $('tLimit').textContent = `limit ${fmt(lim, 1)} V`;
+    if (document.activeElement !== $('lNum') && $('lNum').value === '') $('lNum').value = +lim.toFixed(2);
+  }
   $('motorPill').className = 'pill ' + (ready && enabled ? 'ok' : 'bad');
-  $('motorText').textContent = `Motor: ${MOTOR_STATUS[status] ?? status}${ready ? (enabled ? ', enabled' : ', disabled') : ''}`;
+  $('motorText').textContent = `Motor: ${MOTOR_STATUS[status] ?? status}${ready ? (enabled ? ', enabled' : ', disabled') : ''}${modeTxt}`;
 }
 
 const fmt = (v, d = 2) => (Number.isFinite(v) ? v.toFixed(d) : '—');
@@ -378,6 +401,8 @@ $('velRange').onchange = e => {
   buildPresets();
 };
 $('enableBtn').onclick = () => sendCmd('E1');
+$('uBtn').onclick = () => { const v = +$('uNum').value; if (Number.isFinite(v)) sendCmd('U' + v); };
+$('lBtn').onclick = () => { const v = +$('lNum').value; if (Number.isFinite(v)) sendCmd('L' + v); };
 $('disableBtn').onclick = () => { setVelocityUI(0, false); sendCmd('E0'); };
 $('applyGains').onclick = () => {
   for (const [id, c] of [['gP', 'P'], ['gI', 'I'], ['gF', 'F']]) {

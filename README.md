@@ -6,7 +6,8 @@ Firmware and a browser control panel for a gimbal BLDC motor driven by an ESP32 
 firmware/
   encoder_test/            1. read the encoder only (motor off)
   constant_velocity_test/  2. spin the motor, tune over serial
-  ble_velocity_control/    3. full control over Bluetooth LE
+  ble_velocity_control/    3. full control over Bluetooth LE (SimpleFOC's velocity loop)
+  simple_velocity_control/ 4. our own simple PI loop in volts + BLE  <- recommended
   driver_test/             diagnostics: driver, motor wiring, encoder (no FOC)
 webapp/
   index.html               Web Bluetooth control panel (single file, no build)
@@ -127,6 +128,29 @@ The same motor setup as `constant_velocity_test`, plus a Bluetooth LE service so
 
 See [BLE protocol](#ble-protocol) if you want to write your own client.
 
+### 4. `simple_velocity_control`: simple PI loop (recommended)
+
+Same Bluetooth protocol and web app as `ble_velocity_control`, but the control loop is ours and fits on one screen (`controlStep()` at the top of the sketch). SimpleFOC only reads the encoder and turns "apply U volts" into phase voltages. Nothing is estimated, so the voltage you see is exactly what the motor gets.
+
+```cpp
+error     = target_velocity - velocity;
+integral += Ki * error * dt;          // clamped to ±voltage_limit (anti-windup)
+voltage   = Kp * error + integral;    // clamped to ±voltage_limit
+```
+
+**Voltage limit = torque limit.** At standstill, current = V / 7.2 Ω, so 12 V gives ~1.7 A (strong, but the motor heats up quickly if held stalled). `ble_velocity_control` capped this at 1 A estimated (~7 V), which is why it felt weak.
+
+Extra commands on top of `V`, `P`, `I`, `F`, `E`:
+
+| Command | Effect |
+|---|---|
+| `U<volts>` | direct voltage mode: constant torque with no loop, e.g. `U3`. `V…` switches back to velocity mode. |
+| `L<volts>` | voltage (torque) limit, up to 13.5 V on 24 V |
+
+P and I are in volts here: P is V per rad/s (default 0.3), I is V per rad/s per second (default 3.0). The web app has a "Torque test" box for `U` and `L`.
+
+Velocity is computed over a 2 ms window (`VEL_SAMPLE_TIME`) instead of SimpleFOC's 0.1 ms default. One count of AS5600 flicker over 0.1 ms reads as several rad/s of fake velocity; over 2 ms it's ~20x smaller.
+
 ### Diagnostics: `driver_test`
 
 When something isn't working, this sketch tests each piece on its own, without the FOC loop or the startup alignment. Run the steps in order; the first one that fails is where the problem is.
@@ -230,6 +254,12 @@ Service `6e1a0001-8b3c-4f2a-9d4e-2b7c1f0a5e01`. All binary values are little-end
 **`ERR-MOT:Failed to notice movement` / `motor_status=14`**: the motor didn't move during alignment. Check that the supply is on and matches `VOLTAGE_POWER_SUPPLY`, that EN (GPIO 27) is wired, and that the motor phases are connected. If it only passes on a retry, raise `VOLTAGE_SENSOR_ALIGN` to that voltage.
 
 **Velocity reads 0 even when turning the shaft by hand**: same cause as above. When alignment fails, SimpleFOC leaves the sensor direction unknown (0), and the velocity is multiplied by it.
+
+**Velocity reads ±2 rad/s or more when the motor is still**: the velocity window is too short for the encoder's resolution. Use `simple_velocity_control` (2 ms window) or set `sensor.min_elapsed_time = 0.002` before `sensor.init()`. If it's still noisy, check the magnet gap (~0.5–3 mm) and centering, and raise the filter (`F0.05`).
+
+**Weak torque**: use `simple_velocity_control` and raise the voltage limit (`L`). Test with `U3`, `U6`: the motor should resist being turned noticeably harder at each step. If torque is weak even in direct voltage mode, recheck alignment (`motor_status=4` at boot) and that `MOTOR_POLE_PAIRS` is right (`driver_test` step 4).
+
+**Driver outputs ~1 V at `h12` while the Mini's power input reads 24 V**: the driver chip is dead. Replace the SimpleFOC Mini.
 
 **Motor oscillates or buzzes**: gains too high. Halve P, then I, until it stops.
 

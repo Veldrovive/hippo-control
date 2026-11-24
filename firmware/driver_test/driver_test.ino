@@ -225,8 +225,12 @@ void loop() {
   sensor.update();
   handleSerial();
 
-  if (mode == MODE_OPENLOOP)
+  if (mode == MODE_OPENLOOP) {
+    // SimpleFOC 2.4: move() only computes the setpoint; loopFOC() is what
+    // actually writes the phase voltages, so both are required.
     motor.move(openloop_target);
+    motor.loopFOC();
+  }
 
   unsigned long now = millis();
   if (now - last_status >= STATUS_INTERVAL_MS) {
